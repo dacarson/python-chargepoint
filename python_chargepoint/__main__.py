@@ -18,7 +18,9 @@ if __name__ == "__main__":
     password = getpass("Password: ")
 
     try:
-        client = ChargePoint(username, password)
+        # Enable token caching (default behavior)
+        client = ChargePoint(username, password, use_token_cache=True)
+        print("✓ Login successful! Token cached for future use.")
     except ChargePointLoginError:
         sys.exit(1)
 

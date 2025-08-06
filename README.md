@@ -11,14 +11,55 @@ I just wanted a way to retrieve and store charging data from my ChargePoint Home
 in a way that is easy to model and query. This project is the first step in getting that data into a
 more robust time series database.
 
+## Features
+
+- **Token Caching**: Automatically caches login tokens to disk to avoid re-authentication on script restarts
+- **Home Charger Management**: Monitor and control your ChargePoint Home Flex charger
+- **Charging Session Management**: Start, stop, and monitor charging sessions
+- **Account Information**: Access account details, vehicles, and charging history
+
 ## Use
 
-### Login
+### Login with Token Caching
+
+The library automatically caches login tokens to disk (default location: `~/.chargepoint/`). This allows you to avoid re-authentication when restarting your scripts.
 
 ```python
 from python_chargepoint import ChargePoint
 
+# First run - performs fresh login and caches token
 client = ChargePoint(username="user", password="password")
+print(client.user_id)
+# 1234567890
+
+# Subsequent runs - uses cached token automatically
+client2 = ChargePoint(username="user", password="password")  # No password prompt needed!
+print(client2.user_id)
+# 1234567890
+```
+
+#### Token Cache Management
+
+```python
+# Disable token caching
+client = ChargePoint(username="user", password="password", use_token_cache=False)
+
+# Use custom cache directory
+client = ChargePoint(username="user", password="password", cache_dir="/path/to/cache")
+
+# Clear token cache for current user
+client.clear_token_cache()
+
+# Clear all cached tokens
+client.clear_all_token_caches()
+```
+
+#### Basic Login (without caching)
+
+```python
+from python_chargepoint import ChargePoint
+
+client = ChargePoint(username="user", password="password", use_token_cache=False)
 print(client.user_id)
 # 1234567890
 ```

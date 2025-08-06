@@ -21,6 +21,7 @@ from .exceptions import (
 from .global_config import ChargePointGlobalConfiguration
 from .session import ChargingSession
 from .constants import _LOGGER, DISCOVERY_API
+from .token_cache import TokenCache
 
 
 def _dict_for_query(device_data: dict) -> dict:
@@ -59,9 +60,15 @@ class ChargePoint:
         password: str,
         session_token: str = "",
         app_version: str = "5.97.0",
+        use_token_cache: bool = True,
+        cache_dir: Optional[str] = None,
     ):
         self._session = Session()
         self._app_version = app_version
+        self._username = username
+        self._use_token_cache = use_token_cache
+        self._token_cache = TokenCache(cache_dir) if use_token_cache else None
+        
         self._device_data = {
             "appId": "com.coulomb.ChargePoint",
             "manufacturer": "Apple",
@@ -78,19 +85,36 @@ class ChargePoint:
         self._session_token = None
         self._global_config = self._get_configuration(username)
 
-        if session_token:
-            self._set_session_token(session_token)
+        # Determine session token to use
+        session_token_to_use = session_token
+        
+        # If no session token provided, try to load from cache
+        if not session_token_to_use and self._use_token_cache:
+            cached_token = self._token_cache.load_token(username)
+            if cached_token:
+                session_token_to_use = cached_token["session_token"]
+                _LOGGER.debug("Loaded session token from cache for user: %s", username)
+
+        # Try to use session token if available
+        if session_token_to_use:
+            self._set_session_token(session_token_to_use)
             self._logged_in = True
             try:
                 account: ChargePointAccount = self.get_account()
                 self._user_id = str(account.user.user_id)
+                if not session_token:  # Only log if we used cached token
+                    _LOGGER.info("Successfully loaded cached token for user: %s", username)
                 return
             except ChargePointCommunicationException:
                 _LOGGER.warning(
-                    "Provided session token is expired, will attempt to re-login"
+                    "Session token is expired, will attempt to re-login"
                 )
                 self._logged_in = False
+                # Clear expired token from cache
+                if self._use_token_cache and not session_token:
+                    self._token_cache.clear_token(username)
 
+        # Perform fresh login
         self.login(username, password)
 
     @property
@@ -141,6 +165,15 @@ class ChargePoint:
             _LOGGER.debug("Authentication success! User ID: %s", self._user_id)
             self._set_session_token(req["sessionId"])
             self._logged_in = True
+            
+            # Save token to cache if enabled
+            if self._use_token_cache and self._token_cache:
+                self._token_cache.save_token(
+                    username=username,
+                    session_token=req["sessionId"],
+                    user_id=str(self._user_id)
+                )
+            
             return
 
         _LOGGER.error(
@@ -160,6 +193,10 @@ class ChargePoint:
             raise ChargePointCommunicationException(
                 response=response, message="Failed to log out!"
             )
+
+        # Clear cached token if enabled
+        if self._use_token_cache and self._token_cache:
+            self._token_cache.clear_token(self._username)
 
         self._session.headers = {}
         self._session.cookies.clear_session_cookies()
@@ -443,3 +480,15 @@ class ChargePoint:
         return ChargingSession.start(
             device_id=device_id, client=self, max_retry=max_retry
         )
+    
+    def clear_token_cache(self) -> None:
+        """Clear the cached token for the current user."""
+        if self._use_token_cache and self._token_cache:
+            self._token_cache.clear_token(self._username)
+            _LOGGER.info("Cleared token cache for user: %s", self._username)
+    
+    def clear_all_token_caches(self) -> None:
+        """Clear all cached tokens."""
+        if self._use_token_cache and self._token_cache:
+            self._token_cache.clear_all_tokens()
+            _LOGGER.info("Cleared all token caches")
