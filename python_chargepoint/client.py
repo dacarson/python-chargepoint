@@ -149,10 +149,18 @@ class ChargePoint:
         headers = {
             "User-Agent": f"com.coulomb.ChargePoint/{self._app_version} CFNetwork/1329 Darwin/21.3.0"
         }
+        # Create request matching mobile app structure with device data at both top level and nested
         request = {
-            "deviceData": self._device_data,
-            "username": username,
             "password": password,
+            "manufacturer": self._device_data["manufacturer"],
+            "notificationId": self._device_data["notificationId"],
+            "notificationIdType": self._device_data["notificationIdType"],
+            "model": self._device_data["model"],
+            "udid": self._device_data["udid"],
+            "username": username,
+            "version": self._device_data["version"],
+            "type": self._device_data["type"],
+            "deviceData": self._device_data,
         }
         _LOGGER.debug("Attempting client login with user: %s", username)
         login = post(login_url, json=request, headers=headers)
