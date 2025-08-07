@@ -252,3 +252,73 @@ class PowerUtility:
             name=json.get("name", ""),
             plans=[PowerUtilityPlan.from_json(plan) for plan in json.get("plans", [])],
         )
+
+
+@dataclass
+class VehicleInfo:
+    """Vehicle information for charging sessions."""
+    vehicle_id: int
+    battery_capacity: float
+    make: str
+    model: str
+    year: int
+    ev_range: int
+    is_primary_vehicle: bool
+
+    @classmethod
+    def from_json(cls, json: dict):
+        return cls(
+            vehicle_id=json.get("vehicle_id", 0),
+            battery_capacity=json.get("battery_capacity", 0.0),
+            make=json.get("make", ""),
+            model=json.get("model", ""),
+            year=json.get("year", 0),
+            ev_range=json.get("ev_range", 0),
+            is_primary_vehicle=json.get("is_primary_vehicle", False),
+        )
+
+
+@dataclass
+class HomeChargerStatusV2:
+    """
+    New charger status data type for the hcpo-charger-management API.
+    This matches the mobile app implementation.
+    """
+    charger_id: int
+    brand: Optional[str]
+    plugged_in: bool
+    connected: bool
+    charging_status: str  # "CHARGING", "CHARGING_STOPPED", etc.
+    scheduled_for: str
+    reminder_enabled: bool
+    reminder_time: str
+    model: str
+    mac_address: str
+    amperage_limit: int
+    possible_amperage_limits: List[int]
+    amperage_in_progress: bool
+    flashlight_reset: bool
+    has_utility_info: bool
+    is_during_scheduled_time: bool
+
+    @classmethod
+    def from_json(cls, charger_id: int, json: dict):
+        charge_settings = json.get("chargeAmperageSettings", {})
+        return cls(
+            charger_id=charger_id,
+            brand=json.get("brand", ""),
+            plugged_in=json.get("isPluggedIn", False),
+            connected=json.get("isConnected", False),
+            charging_status=json.get("chargingStatus", ""),
+            scheduled_for=json.get("scheduledFor", ""),
+            reminder_enabled=json.get("isReminderEnabled", False),
+            reminder_time=json.get("plugInReminderTime", ""),
+            model=json.get("model", ""),
+            mac_address=json.get("macAddress", "00:00:00:00:00:00"),
+            amperage_limit=charge_settings.get("chargeLimit", 0),
+            possible_amperage_limits=charge_settings.get("possibleChargeLimit", []),
+            amperage_in_progress=charge_settings.get("inProgress", False),
+            flashlight_reset=json.get("flashlightReset", False),
+            has_utility_info=json.get("hasUtilityInfo", False),
+            is_during_scheduled_time=json.get("isDuringScheduledTime", False),
+        )

@@ -6,7 +6,7 @@ from time import sleep
 from requests import codes
 
 from .constants import _LOGGER
-from .types import ChargingSessionUpdate, PowerUtility
+from .types import ChargingSessionUpdate, PowerUtility, VehicleInfo
 from .exceptions import ChargePointCommunicationException
 
 
@@ -141,15 +141,20 @@ class ChargingSession:
     update_period: int
 
     utility: Optional[PowerUtility]
+    vehicle_info: Optional[VehicleInfo]
 
     def __init__(
-        self, session_id: int, client: "ChargePoint", *args, **kwargs  # noqa: F821
+        self, session_id: int, client: "ChargePoint", use_alternative_api: bool = False, *args, **kwargs  # noqa: F821
     ):
         super().__init__(*args, **kwargs)
         self._client = client
         self.session_id = session_id
+        self._use_alternative_api = use_alternative_api
 
-        self._get()
+        if use_alternative_api:
+            self._getv2()
+        else:
+            self._get()
 
     def _get(self) -> None:
         _LOGGER.debug("Getting session information for session %s", self.session_id)
@@ -203,6 +208,43 @@ class ChargingSession:
         _LOGGER.debug("Passed retry loop: %s", response.json())
         status = response.json()["charging_status"]
 
+        self._populate_from_status(status)
+
+    def _getv2(self) -> None:
+        """Get session information using the alternative API endpoint."""
+        _LOGGER.debug("Getting session information for session %s using alternative API", self.session_id)
+        
+        # Use the alternative API endpoint
+        request_body = {
+            "charging_status": {
+                "session_id": self.session_id,
+                "mfhs": []
+            }
+        }
+        
+        response = self._client.session.post(
+            f"{self._client.global_config.endpoints.internal_api}/driver-bff/v1/sessions/{self.session_id}",
+            json=request_body
+        )
+
+        if response.status_code != codes.ok:
+            raise ChargePointCommunicationException(
+                response=response, message="Failed to get charging session data via alternative API."
+            )
+
+        json_response = response.json()
+        status = json_response.get("charging_status", {})
+        
+        if not status:
+            raise ChargePointCommunicationException(
+                response=response, message="No charging status data returned from alternative API."
+            )
+
+        _LOGGER.debug("Alternative API response: %s", json_response)
+        self._populate_from_status(status)
+
+    def _populate_from_status(self, status: dict) -> None:
+        """Populate session attributes from status data."""
         self.start_time = datetime.fromtimestamp(
             status.get("start_time") / 1000, tz=timezone.utc
         )
@@ -252,6 +294,34 @@ class ChargingSession:
         if utility:
             self.utility = PowerUtility.from_json(utility)
 
+        self.vehicle_info = None
+        vehicle_info = status.get("vehicle_info")
+        if vehicle_info:
+            self.vehicle_info = VehicleInfo.from_json(vehicle_info)
+
+    def refresh(self, use_alternative_api: bool = None) -> None:
+        """
+        Refresh the session data from the server.
+        
+        Args:
+            use_alternative_api: If None, uses the same API as originally used.
+                               If True/False, uses the specified API.
+        """
+        if use_alternative_api is None:
+            # Use the same API that was used originally
+            # We can determine this by checking if we have the _use_alternative_api attribute
+            use_alternative_api = getattr(self, '_use_alternative_api', False)
+        
+        _LOGGER.debug("Refreshing session %s data using %s API", 
+                     self.session_id, "alternative" if use_alternative_api else "mapcache")
+        
+        if use_alternative_api:
+            self._getv2()
+        else:
+            self._get()
+        
+        _LOGGER.debug("Session %s data refreshed successfully", self.session_id)
+
     def stop(self, max_retry: int = 30) -> None:
         _modify(
             client=self._client,
@@ -264,7 +334,7 @@ class ChargingSession:
 
     @classmethod
     def start(
-        cls, device_id: int, client: "ChargePoint", max_retry: int = 30  # noqa: F821
+        cls, device_id: int, client: "ChargePoint", max_retry: int = 30, use_alternative_api: bool = False  # noqa: F821
     ):
         session_id = _modify(
             client=client, action="start", device_id=device_id, max_retry=max_retry
@@ -275,4 +345,4 @@ class ChargingSession:
         # get the correct session ID from the status API.
         status = client.get_user_charging_status()
         if session_id and status:  # pragma: no cover
-            return cls(session_id=status.session_id, client=client)
+            return cls(session_id=status.session_id, client=client, use_alternative_api=use_alternative_api)

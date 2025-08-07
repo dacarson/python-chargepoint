@@ -2,13 +2,17 @@ from uuid import uuid4
 from typing import List, Optional
 from functools import wraps
 from time import sleep
+import json
 
 from requests import Session, codes, post
+import time
+import brotli
 
 from .types import (
     ChargePointAccount,
     ElectricVehicle,
     HomeChargerStatus,
+    HomeChargerStatusV2,
     HomeChargerTechnicalInfo,
     UserChargingStatus,
 )
@@ -59,7 +63,7 @@ class ChargePoint:
         username: str,
         password: str,
         session_token: str = "",
-        app_version: str = "5.97.0",
+        app_version: str = "6.18.0",
         use_token_cache: bool = True,
         cache_dir: Optional[str] = None,
     ):
@@ -69,16 +73,31 @@ class ChargePoint:
         self._use_token_cache = use_token_cache
         self._token_cache = TokenCache(cache_dir) if use_token_cache else None
         
-        self._device_data = {
-            "appId": "com.coulomb.ChargePoint",
-            "manufacturer": "Apple",
-            "model": "iPhone",
-            "notificationId": "",
-            "notificationIdType": "",
-            "type": "IOS",
-            "udid": str(uuid4()),
-            "version": app_version,
-        }
+        # Try to load cached device data first
+        cached_device_data = None
+        if self._use_token_cache and self._token_cache:
+            cached_device_data = self._token_cache.load_device_data()
+        
+        # Create device data with cached UDID or generate new one
+        if cached_device_data and "udid" in cached_device_data:
+            self._device_data = cached_device_data
+            _LOGGER.debug("Loaded cached device data with UDID: %s", cached_device_data["udid"])
+        else:
+            self._device_data = {
+                "appId": "com.coulomb.ChargePoint",
+                "manufacturer": "Apple",
+                "model": "iPhone",
+                "notificationId": "",
+                "notificationIdType": "",
+                "type": "IOS",
+                "udid": str(uuid4()),
+                "version": app_version,
+            }
+            # Cache the device data for future use
+            if self._use_token_cache and self._token_cache:
+                self._token_cache.save_device_data(self._device_data)
+                _LOGGER.debug("Generated and cached new device data with UDID: %s", self._device_data["udid"])
+        
         self._device_query_params = _dict_for_query(self._device_data)
         self._user_id = None
         self._logged_in = False
@@ -147,7 +166,13 @@ class ChargePoint:
             f"{self._global_config.endpoints.accounts}v2/driver/profile/account/login"
         )
         headers = {
-            "User-Agent": f"com.coulomb.ChargePoint/{self._app_version} CFNetwork/1329 Darwin/21.3.0"
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "cp-region": "NA-US",
+            "User-Agent": f"com.coulomb.ChargePoint/{self._app_version} CFNetwork/3826.600.31 Darwin/24.6.0",
+            "Accept-Language": "en;q=1",
+            "Accept-Encoding": "gzip, deflate, br"
         }
         # Create request matching mobile app structure with device data at both top level and nested
         request = {
@@ -163,12 +188,44 @@ class ChargePoint:
             "deviceData": self._device_data,
         }
         _LOGGER.debug("Attempting client login with user: %s", username)
-        login = post(login_url, json=request, headers=headers)
-        _LOGGER.debug(login.cookies.get_dict())
-        _LOGGER.debug(login.headers)
+        _LOGGER.debug("Login URL: %s", login_url)
+        _LOGGER.debug("Request headers: %s", headers)
+        _LOGGER.debug("Request body: %s", request)
+        
+        # Set session headers to match the login request
+        self._session.headers.update(headers)
+        
+        login = self._session.post(login_url, json=request, allow_redirects=False)
+        _LOGGER.debug("Response URL: %s", login.url)
+        _LOGGER.debug("Response cookies: %s", login.cookies.get_dict())
+        _LOGGER.debug("Response headers: %s", login.headers)
+        _LOGGER.debug("Response status: %s", login.status_code)
+        _LOGGER.debug("Response content-type: %s", login.headers.get('content-type'))
+        _LOGGER.debug("Response content-encoding: %s", login.headers.get('content-encoding'))
+
+        # If we get a 403, report the failure and exit
+        if login.status_code == 403:
+            _LOGGER.error("Login failed with 403 status. Connection failed.")
+            raise ChargePointLoginError(login, "Login failed with 403 status. Connection failed.")
 
         if login.status_code == codes.ok:
-            req = login.json()
+            try:
+                req = login.json()
+            except Exception as e:
+                _LOGGER.error("Failed to parse JSON response: %s", e)
+                _LOGGER.error("Raw response content: %s", login.content)
+                
+                # Try manual Brotli decompression if content is compressed
+                if login.headers.get('content-encoding') == 'br':
+                    try:
+                        decompressed_content = brotli.decompress(login.content)
+                        _LOGGER.debug("Manually decompressed Brotli content")
+                        req = json.loads(decompressed_content.decode('utf-8'))
+                    except Exception as brotli_error:
+                        _LOGGER.error("Failed to manually decompress Brotli: %s", brotli_error)
+                        raise ChargePointLoginError(login, f"Failed to parse response: {e}")
+                else:
+                    raise ChargePointLoginError(login, f"Failed to parse response: {e}")
             self._user_id = req["user"]["userId"]
             _LOGGER.debug("Authentication success! User ID: %s", self._user_id)
             self._set_session_token(req["sessionId"])
@@ -315,6 +372,37 @@ class ChargePoint:
         return pandas
 
     @_require_login
+    def get_home_chargers_v2(self) -> List[dict]:
+        """
+        Get home chargers using the newer hcpo-charger-management API.
+        Returns list of charger objects with id, label, protocolIdentifier, etc.
+        """
+        _LOGGER.debug("Searching for registered chargers using new API")
+        response = self._session.get(
+            f"{self._global_config.endpoints.hcpo_hcm}api/v1/configuration/users/{self.user_id}/chargers",
+            params=self._device_query_params,
+        )
+
+        if response.status_code != codes.ok:
+            _LOGGER.error(
+                "Failed to get home chargers via new API! status_code=%s err=%s",
+                response.status_code,
+                response.text,
+            )
+            raise ChargePointCommunicationException(
+                response=response, message="Failed to retrieve Home Flex chargers via new API."
+            )
+
+        result = response.json()
+        chargers = result.get("data", [])
+        _LOGGER.debug(
+            "Discovered %d connected chargers via new API: %s",
+            len(chargers),
+            ",".join([str(c.get("id", "unknown")) for c in chargers]),
+        )
+        return chargers
+
+    @_require_login
     def get_home_charger_status(self, charger_id: int) -> HomeChargerStatus:
         _LOGGER.debug("Getting status for panda: %s", charger_id)
         get_status = {
@@ -341,6 +429,35 @@ class ChargePoint:
 
         return HomeChargerStatus.from_json(
             charger_id=charger_id, json=status["get_panda_status"]
+        )
+
+    @_require_login
+    def get_home_charger_status_v2(self, charger_id: int) -> HomeChargerStatusV2:
+        """
+        Get home charger status using the newer hcpo-charger-management API.
+        This matches the mobile app implementation.
+        """
+        _LOGGER.debug("Getting status for charger %s using new API", charger_id)
+        response = self._session.get(
+            f"{self._global_config.endpoints.hcpo_hcm}api/v1/configuration/users/{self.user_id}/chargers/{charger_id}/status",
+            params=self._device_query_params,
+        )
+
+        if response.status_code != codes.ok:
+            _LOGGER.error(
+                "Failed to get home charger status via new API! status_code=%s err=%s",
+                response.status_code,
+                response.text,
+            )
+            raise ChargePointCommunicationException(
+                response=response, message="Failed to get home charger status via new API."
+            )
+
+        status = response.json()
+        _LOGGER.debug("New API status response: %s", status)
+
+        return HomeChargerStatusV2.from_json(
+            charger_id=charger_id, json=status
         )
 
     @_require_login
@@ -477,16 +594,16 @@ class ChargePoint:
         return
 
     @_require_login
-    def get_charging_session(self, session_id: int) -> ChargingSession:
-        return ChargingSession(session_id=session_id, client=self)
+    def get_charging_session(self, session_id: int, use_alternative_api: bool = False) -> ChargingSession:
+        return ChargingSession(session_id=session_id, client=self, use_alternative_api=use_alternative_api)
 
     @_require_login
     def start_charging_session(
-        self, device_id: int, max_retry: int = 30
+        self, device_id: int, max_retry: int = 30, use_alternative_api: bool = False
     ) -> ChargingSession:
 
         return ChargingSession.start(
-            device_id=device_id, client=self, max_retry=max_retry
+            device_id=device_id, client=self, max_retry=max_retry, use_alternative_api=use_alternative_api
         )
     
     def clear_token_cache(self) -> None:
@@ -495,8 +612,20 @@ class ChargePoint:
             self._token_cache.clear_token(self._username)
             _LOGGER.info("Cleared token cache for user: %s", self._username)
     
+    def clear_device_cache(self) -> None:
+        """Clear the cached device data for the current platform."""
+        if self._use_token_cache and self._token_cache:
+            self._token_cache.clear_device_data()
+            _LOGGER.info("Cleared device cache for platform")
+    
     def clear_all_token_caches(self) -> None:
         """Clear all cached tokens."""
         if self._use_token_cache and self._token_cache:
             self._token_cache.clear_all_tokens()
             _LOGGER.info("Cleared all token caches")
+    
+    def clear_all_caches(self) -> None:
+        """Clear all cached tokens and device data."""
+        if self._use_token_cache and self._token_cache:
+            self._token_cache.clear_all_caches()
+            _LOGGER.info("Cleared all caches")

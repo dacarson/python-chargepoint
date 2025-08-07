@@ -1,6 +1,7 @@
 import json
 import os
 import hashlib
+import platform
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -9,7 +10,7 @@ from .constants import _LOGGER
 
 
 class TokenCache:
-    """Manages caching of ChargePoint session tokens to disk."""
+    """Manages caching of ChargePoint session tokens and device data to disk."""
     
     def __init__(self, cache_dir: Optional[str] = None):
         """
@@ -30,6 +31,13 @@ class TokenCache:
         # Create a hash of the username to avoid special characters in filename
         username_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
         return self.cache_dir / f"token_{username_hash}.json"
+    
+    def _get_device_cache_file(self) -> Path:
+        """Get the device cache file path for the current platform."""
+        # Use platform info to create a unique identifier
+        platform_id = f"{platform.system()}_{platform.machine()}_{platform.processor()}"
+        platform_hash = hashlib.sha256(platform_id.encode()).hexdigest()[:16]
+        return self.cache_dir / f"device_{platform_hash}.json"
     
     def save_token(self, username: str, session_token: str, user_id: str, 
                    expires_in_hours: int = 24) -> None:
@@ -97,6 +105,56 @@ class TokenCache:
                 pass
             return None
     
+    def save_device_data(self, device_data: Dict[str, Any]) -> None:
+        """
+        Save device data (including UDID) to disk for the current platform.
+        
+        Args:
+            device_data: Dictionary containing device information
+        """
+        cache_data = {
+            "device_data": device_data,
+            "created_at": datetime.now().isoformat(),
+            "platform": f"{platform.system()}_{platform.machine()}"
+        }
+        
+        cache_file = self._get_device_cache_file()
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+            _LOGGER.debug("Saved device cache for platform: %s", cache_data["platform"])
+        except Exception as e:
+            _LOGGER.warning("Failed to save device cache: %s", e)
+    
+    def load_device_data(self) -> Optional[Dict[str, Any]]:
+        """
+        Load cached device data for the current platform.
+        
+        Returns:
+            Dictionary with device data if found, None if not found
+        """
+        cache_file = self._get_device_cache_file()
+        
+        if not cache_file.exists():
+            _LOGGER.debug("No cached device data found for platform")
+            return None
+        
+        try:
+            with open(cache_file, 'r') as f:
+                cache_data = json.load(f)
+            
+            _LOGGER.debug("Loaded cached device data for platform: %s", cache_data.get("platform"))
+            return cache_data.get("device_data")
+            
+        except Exception as e:
+            _LOGGER.warning("Failed to load device cache: %s", e)
+            # Remove corrupted cache file
+            try:
+                cache_file.unlink()
+            except:
+                pass
+            return None
+    
     def clear_token(self, username: str) -> None:
         """Remove cached token for a username."""
         cache_file = self._get_cache_file(username)
@@ -107,6 +165,16 @@ class TokenCache:
         except Exception as e:
             _LOGGER.warning("Failed to clear token cache: %s", e)
     
+    def clear_device_data(self) -> None:
+        """Remove cached device data for the current platform."""
+        cache_file = self._get_device_cache_file()
+        try:
+            if cache_file.exists():
+                cache_file.unlink()
+                _LOGGER.debug("Cleared device cache for platform")
+        except Exception as e:
+            _LOGGER.warning("Failed to clear device cache: %s", e)
+    
     def clear_all_tokens(self) -> None:
         """Remove all cached tokens."""
         try:
@@ -114,4 +182,13 @@ class TokenCache:
                 cache_file.unlink()
             _LOGGER.debug("Cleared all token caches")
         except Exception as e:
-            _LOGGER.warning("Failed to clear all token caches: %s", e) 
+            _LOGGER.warning("Failed to clear all token caches: %s", e)
+    
+    def clear_all_caches(self) -> None:
+        """Remove all cached tokens and device data."""
+        try:
+            for cache_file in self.cache_dir.glob("*.json"):
+                cache_file.unlink()
+            _LOGGER.debug("Cleared all caches")
+        except Exception as e:
+            _LOGGER.warning("Failed to clear all caches: %s", e) 

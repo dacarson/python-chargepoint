@@ -88,6 +88,42 @@ for charger_id in chargers:
 #   mac_address='0024B10000012345',
 #   amperage_limit=25,
 #   possible_amperage_limits=[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
+
+### New Charger Status API
+
+New Charger Status API
+
+```python
+from python_chargepoint import ChargePoint
+
+client = ChargePoint(username="user", password="password")
+
+# Get chargers using new API
+chargers = client.get_home_chargers_v2()
+print(chargers)
+# [{'id': 12345678, 'label': 'Home Charger', 'protocolIdentifier': 'CPH50', ...}]
+
+# Get charger status using new API (matches mobile app)
+for charger in chargers:
+    charger_id = charger.get('id')
+    status = client.get_home_charger_status_v2(charger_id)
+    print(status)
+# HomeChargerStatusV2(
+#   brand='CP', 
+#   plugged_in=True, 
+#   connected=True, 
+#   charging_status='CHARGING_STOPPED', 
+#   scheduled_for='00:00', 
+#   reminder_enabled=False, 
+#   reminder_time='21:00', 
+#   model='CPH50-NEMA6-50-L23', 
+#   mac_address='0024B10000012345',
+#   amperage_limit=15,
+#   possible_amperage_limits=[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+#   amperage_in_progress=False,
+#   flashlight_reset=False,
+#   has_utility_info=False,
+#   is_during_scheduled_time=True)
 ```
 
 ### Account Charging Status and Session
