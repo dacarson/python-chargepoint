@@ -6,7 +6,7 @@ from time import sleep
 from requests import codes
 
 from .constants import _LOGGER
-from .types import ChargingSessionUpdate, PowerUtility, VehicleInfo
+from .types import ChargingSessionUpdate, PowerUtility, VehicleInfo, AmperageLimitResponse
 from .exceptions import ChargePointCommunicationException
 
 
@@ -331,6 +331,45 @@ class ChargingSession:
             session_id=self.session_id,
             max_retry=max_retry,
         )
+
+    def set_charge_amperage_limit(self, amperage_limit: int) -> AmperageLimitResponse:
+        """
+        Set the charge amperage limit for the current charging session.
+        
+        Args:
+            amperage_limit: The desired amperage limit in amps
+            
+        Returns:
+            AmperageLimitResponse: The response from the API
+            
+        Raises:
+            ChargePointCommunicationException: If the API call fails
+        """
+        _LOGGER.debug("Setting charge amperage limit to %d for session %s", amperage_limit, self.session_id)
+        
+        request = {
+            "chargeAmperageLimit": amperage_limit
+        }
+        
+        response = self._client.session.put(
+            f"{self._client.global_config.endpoints.hcpo_hcm}api/v1/configuration/chargers/{self.device_id}/charge-amperage-limit",
+            json=request,
+        )
+        
+        if response.status_code != codes.ok:
+            _LOGGER.error(
+                "Failed to set charge amperage limit! status_code=%s err=%s",
+                response.status_code,
+                response.text,
+            )
+            raise ChargePointCommunicationException(
+                response=response, message="Failed to set charge amperage limit."
+            )
+        
+        response_data = response.json()
+        _LOGGER.debug("Amperage limit response: %s", response_data)
+        
+        return AmperageLimitResponse.from_json(response_data)
 
     @classmethod
     def start(

@@ -16,6 +16,7 @@ more robust time series database.
 - **Token Caching**: Automatically caches login tokens to disk to avoid re-authentication on script restarts
 - **Home Charger Management**: Monitor and control your ChargePoint Home Flex charger
 - **Charging Session Management**: Start, stop, and monitor charging sessions
+- **Dynamic Amperage Control**: Adjust charge amperage limits during active charging sessions
 - **Account Information**: Access account details, vehicles, and charging history
 
 ## Use
@@ -261,3 +262,27 @@ client.set_amperage_limit(home_flex_id, 23)
 print(client.get_home_charger_status(home_flex_id).amperage_limit)
 # 23
 ```
+
+#### Adjusting charge amperage during active charging
+
+You can also adjust the charge amperage limit during an active charging session:
+
+```python
+from python_chargepoint import ChargePoint
+
+client = ChargePoint(username="user", password="password")
+charging = client.get_user_charging_status()
+
+if charging and charging.state == "in_use":
+    session = client.get_charging_session(charging.session_id)
+    
+    # Adjust amperage limit during charging (e.g., to 32 amps)
+    response = session.set_charge_amperage_limit(32)
+    print(f"Amperage limit change status: {response.status}")
+    # Amperage limit change status: APPLYING
+    
+    print(f"Desired value: {response.desired_value}")
+    # Desired value: 32
+```
+
+**Note**: This functionality is typically only available when actively charging and may not be supported by all chargers.

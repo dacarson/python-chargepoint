@@ -322,3 +322,19 @@ class HomeChargerStatusV2:
             has_utility_info=json.get("hasUtilityInfo", False),
             is_during_scheduled_time=json.get("isDuringScheduledTime", False),
         )
+
+
+@dataclass
+class AmperageLimitResponse:
+    """Response from setting charge amperage limit during a charging session."""
+    name: str
+    desired_value: str
+    status: str
+
+    @classmethod
+    def from_json(cls, json: dict):
+        return cls(
+            name=json.get("name", ""),
+            desired_value=json.get("desiredValue", ""),
+            status=json.get("status", ""),
+        )
